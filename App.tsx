@@ -7,69 +7,178 @@ import Confetti from './components/Confetti';
 const App: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
 
-  // Audio Refs
+  // Audio Context Ref
+  const audioContextRef = useRef<AudioContext | null>(null);
   const bgmRef = useRef<HTMLAudioElement | null>(null);
-  const openSfxRef = useRef<HTMLAudioElement | null>(null);
-  const chimeSfxRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    // Initialize Audio objects
-    // Using Internet Archive for public domain Satie (Gymnopédie No. 1)
+    // Initialize AudioContext
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    audioContextRef.current = new AudioContextClass();
+
+    // Initialize BGM
+    // Using a direct reliable link for Satie. If this fails, the app will still work without BGM.
     bgmRef.current = new Audio('https://ia800306.us.archive.org/24/items/ErikSatieGymnopedieNo1/ErikSatieGymnopedieNo1.mp3'); 
     bgmRef.current.loop = true;
-    bgmRef.current.volume = 0; // Start silent
-
-    // Paper slide sound
-    openSfxRef.current = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-paper-slide-1530.mp3');
-    openSfxRef.current.volume = 0.6;
-
-    // Magical chime/sparkle
-    chimeSfxRef.current = new Audio('https://assets.mixkit.co/sfx/preview/mixkit-fairy-dust-sparkle-861.mp3');
-    chimeSfxRef.current.volume = 0.4;
+    bgmRef.current.volume = 0;
+    bgmRef.current.crossOrigin = "anonymous";
 
     return () => {
         bgmRef.current?.pause();
         bgmRef.current = null;
-        openSfxRef.current = null;
-        chimeSfxRef.current = null;
+        if (audioContextRef.current) {
+            audioContextRef.current.close();
+        }
     }
   }, []);
 
+  // --- Sound Synthesis Functions ---
+
+  const initAudioContext = () => {
+    if (audioContextRef.current?.state === 'suspended') {
+        audioContextRef.current.resume();
+    }
+  };
+
+  const playPaperSound = () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+
+    // Create noise for paper friction texture
+    const bufferSize = ctx.sampleRate * 0.6; 
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+    }
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    // Filter to simulate paper material (Bandpass focused on mids/highs)
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 800;
+    filter.Q.value = 0.7;
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.4, t + 0.1); // Attack
+    gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5); // Decay
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(t);
+  };
+
+  const playWhooshSound = () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+
+    const bufferSize = ctx.sampleRate * 1.5;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.5; // Pink-ish noise volume
+    }
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    // Lowpass filter sweep for "whoosh" effect
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(200, t);
+    filter.frequency.exponentialRampToValueAtTime(1200, t + 0.4); // Sweep up
+    filter.frequency.exponentialRampToValueAtTime(100, t + 1.2);  // Sweep down
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.15, t + 0.3);
+    gain.gain.linearRampToValueAtTime(0, t + 1.2);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(t);
+  };
+
+  const playChimeSound = () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    const t = ctx.currentTime;
+
+    // Play a magical major triad (C majorish: C6, E6, G6, C7)
+    const frequencies = [1046.50, 1318.51, 1567.98, 2093.00]; 
+
+    frequencies.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+
+        // Stagger entries slightly for a "strum" or "sparkle" effect
+        const delay = i * 0.08; 
+
+        gain.gain.setValueAtTime(0, t + delay);
+        gain.gain.linearRampToValueAtTime(0.08, t + delay + 0.05); // Very quiet
+        gain.gain.exponentialRampToValueAtTime(0.001, t + delay + 2.5); // Long ring
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(t + delay);
+        osc.stop(t + delay + 3);
+    });
+  };
+
+  // --- Interaction Handler ---
+
   const handleEnvelopeClick = () => {
+    // 1. Ensure Audio Context is active (browser requires user gesture)
+    initAudioContext();
+
     const newState = !isOpen;
     setIsOpen(newState);
 
     if (newState) {
         // === OPENING ===
         
-        // 1. Play Open Sound
-        openSfxRef.current?.play().catch(e => console.warn("Audio blocked", e));
+        // 1. Paper Slide (Immediate)
+        playPaperSound();
         
-        // 2. Play Chime with delay (Synced to new 2000ms animation, triggered when letter is ~halfway up)
+        // 2. Whoosh (Letter rising)
         setTimeout(() => {
-             chimeSfxRef.current?.play().catch(e => console.warn("Audio blocked", e));
-        }, 1100);
+            playWhooshSound();
+        }, 300);
 
-        // 3. Fade in Music
+        // 3. Chime (Reveal)
+        setTimeout(() => {
+             playChimeSound();
+        }, 1400);
+
+        // 4. Fade in Music
         if (bgmRef.current) {
             bgmRef.current.currentTime = 0;
             bgmRef.current.volume = 0;
-            const playPromise = bgmRef.current.play();
-            
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    // Fade in
-                    let vol = 0;
-                    const interval = setInterval(() => {
-                        if (vol < 0.3) {
-                            vol += 0.01;
-                            if (bgmRef.current) bgmRef.current.volume = Math.min(vol, 0.3);
-                        } else {
-                            clearInterval(interval);
-                        }
-                    }, 50);
-                }).catch(e => console.warn("Background music blocked", e));
-            }
+            // Catch errors if BGM fails to load so app doesn't break
+            bgmRef.current.play().then(() => {
+                // Fade in
+                let vol = 0;
+                const interval = setInterval(() => {
+                    if (vol < 0.15) { 
+                        vol += 0.01;
+                        if (bgmRef.current) bgmRef.current.volume = Math.min(vol, 0.15);
+                    } else {
+                        clearInterval(interval);
+                    }
+                }, 100);
+            }).catch(e => {
+                console.warn("Background music could not be played:", e);
+            });
         }
     } else {
         // === CLOSING ===
